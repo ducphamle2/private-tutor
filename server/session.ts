@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { ResponseInput } from 'openai/resources/responses/responses';
-import type { ConsoleEvent } from '../shared/types.ts';
+import type { ConsoleEvent, SessionStartEvent } from '../shared/types.ts';
 import type { Settings } from './config.ts';
 import type { Gateway, Sideband } from './openai.ts';
 import type { Persona } from './personas.ts';
 import { executeStudyTool, studyToolDefinitions } from './study-tools.ts';
+import { appendConversationEvent } from './conversations.ts';
 import { publicError, SampleError } from './errors.ts';
 import {
   BACKEND_INSTRUCTIONS,
@@ -21,6 +22,16 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 const text = (value: unknown, max = 512) => (typeof value === 'string' ? value.slice(0, max) : '');
 const number = (value: unknown) =>
   typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
+const UNLOGGED_EVENT_TYPES = ['usage'];
+
+export interface LiveSessionOptions {
+  persona: Persona;
+  topicFile: string;
+  topicText: string;
+  conversationId: string;
+  resumed: boolean;
+  snapshotText: string;
+}
 
 export class LiveSession {
   readonly id = randomUUID();
@@ -28,9 +39,7 @@ export class LiveSession {
   readonly startedAt = Date.now();
   readonly settings: Settings;
   readonly gateway: Gateway;
-  readonly persona: Persona;
-  readonly topicFile: string;
-  readonly topicText: string;
+  readonly options: LiveSessionOptions;
   private upstreamId = '';
   private creationRejected = false;
   private sideband?: Sideband;
@@ -61,18 +70,9 @@ export class LiveSession {
     this.resolveTerminal = resolve;
   });
 
-  constructor(
-    owner: string,
-    persona: Persona,
-    topicFile: string,
-    topicText: string,
-    settings: Settings,
-    gateway: Gateway,
-  ) {
+  constructor(owner: string, options: LiveSessionOptions, settings: Settings, gateway: Gateway) {
     this.owner = owner;
-    this.persona = persona;
-    this.topicFile = topicFile;
-    this.topicText = topicText;
+    this.options = options;
     this.settings = settings;
     this.gateway = gateway;
   }
@@ -89,7 +89,12 @@ export class LiveSession {
   async start(sdp: string): Promise<string> {
     try {
       const created = await this.gateway.create(
-        sessionConfiguration(this.persona, this.topicFile, this.topicText),
+        sessionConfiguration(
+          this.options.persona,
+          this.options.topicFile,
+          this.options.topicText,
+          this.options.snapshotText,
+        ),
         sdp,
       );
       this.upstreamId = created.session.id;
@@ -116,6 +121,13 @@ export class LiveSession {
         throw new SampleError(409, 'start_cancelled', 'Session startup was cancelled.');
       }
       this.lastHeartbeat = Date.now();
+      this.log({
+        type: 'session_start',
+        persona: this.options.persona.id,
+        topicFile: this.options.topicFile,
+        studyDir: this.settings.studyDir,
+        resumed: this.options.resumed,
+      });
       this.emit({
         type: 'ready',
         startedAt: this.startedAt,
@@ -170,7 +182,16 @@ export class LiveSession {
     this.closeRequested = true;
     if (this.sideband) void this.stop('Startup cancelled');
   }
+  private log(value: ConsoleEvent | SessionStartEvent) {
+    if (UNLOGGED_EVENT_TYPES.includes(value.type)) return;
+    try {
+      appendConversationEvent(this.settings, this.options.conversationId, this.id, value);
+    } catch (error) {
+      console.warn(`Conversation log write failed: ${error instanceof Error ? error.message : error}`);
+    }
+  }
   private emit(value: ConsoleEvent) {
+    this.log(value);
     this.history.push(value);
     if (this.history.length > 256) this.history.shift();
     try {
@@ -304,7 +325,7 @@ export class LiveSession {
       const input: ResponseInput = [
         {
           role: 'user',
-          content: `The voice conversation so far follows. Address the user's latest unresolved request.\n\n${context}`,
+          content: `${this.options.snapshotText ? `Snapshot of previous sessions of this conversation:\n${this.options.snapshotText}\n\n` : ''}The voice conversation so far follows. Address the user's latest unresolved request.\n\n${context}`,
         },
       ];
       for (let round = 0; round <= this.settings.maxToolRounds; round++) {

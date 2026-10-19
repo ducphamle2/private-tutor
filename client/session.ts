@@ -6,6 +6,7 @@ interface Callbacks {
   error(message: string, action?: string, code?: string): void;
   level(value: number): void;
   playbackBlocked(value: boolean): void;
+  conversation(id: string): void;
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -209,6 +210,7 @@ export class BrowserSession {
       }
       if (typeof created.id !== 'string' || typeof created.sdp !== 'string')
         throw new Error('The server returned an invalid connection offer.');
+      if (typeof created.conversationId === 'string') this.callbacks.conversation(created.conversationId);
       const socketUrl = new URL('/api/events', window.location.href);
       socketUrl.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       socketUrl.searchParams.set('session', created.id);

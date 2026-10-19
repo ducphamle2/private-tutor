@@ -19,6 +19,29 @@ export interface ConsoleConfig {
 export interface StartOptions {
   persona: string;
   topicFile: string;
+  conversationId: string;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  persona: string;
+  topicFile: string;
+  updatedAt: string;
+}
+
+export interface SessionStartEvent {
+  type: 'session_start';
+  persona: string;
+  topicFile: string;
+  studyDir: string;
+  resumed: boolean;
+}
+
+export interface ConversationRecord {
+  at: string;
+  sessionId: string;
+  event: ConsoleEvent | SessionStartEvent;
 }
 
 export type ConsoleEvent =

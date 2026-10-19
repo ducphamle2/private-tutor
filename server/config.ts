@@ -1,4 +1,6 @@
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export interface Settings {
   apiKey: string;
@@ -6,6 +8,7 @@ export interface Settings {
   port: number;
   origin: string;
   studyDir: string;
+  conversationsDir: string;
   maxSessionSeconds: number;
   closeTimeoutMs: number;
   maxDelegations: number;
@@ -15,7 +18,10 @@ export interface Settings {
   backendResultMaxChars: number;
   topicMaxChars: number;
   readMaxChars: number;
+  snapshotMaxOutputTokens: number;
 }
+
+const DEFAULT_CONVERSATIONS_DIR = fileURLToPath(new URL('../conversations', import.meta.url));
 
 export const STUDY_FILE_EXTENSIONS = ['.md', '.txt'];
 
@@ -35,12 +41,15 @@ export function settingsFromEnv(env: NodeJS.ProcessEnv = process.env): Settings 
   const studyDirRaw = env.STUDY_DIR?.trim() || '';
   if (!studyDirRaw || !existsSync(studyDirRaw) || !statSync(studyDirRaw).isDirectory())
     throw new Error('STUDY_DIR must be set to an existing folder in .env.');
+  const conversationsDir = resolve(env.CONVERSATIONS_DIR?.trim() || DEFAULT_CONVERSATIONS_DIR);
+  mkdirSync(conversationsDir, { recursive: true });
   return {
     apiKey: env.OPENAI_API_KEY?.trim() || '',
     backendModel,
     port,
     origin: `http://127.0.0.1:${port}`,
     studyDir: realpathSync(studyDirRaw),
+    conversationsDir,
     maxSessionSeconds: integer('MAX_SESSION_SECONDS', 1800, 60, 3600),
     closeTimeoutMs: 20000,
     maxDelegations: integer('MAX_DELEGATIONS', 100, 1, 1000),
@@ -50,5 +59,6 @@ export function settingsFromEnv(env: NodeJS.ProcessEnv = process.env): Settings 
     backendResultMaxChars: integer('BACKEND_RESULT_MAX_CHARS', 4000, 400, 20000),
     topicMaxChars: integer('TOPIC_MAX_CHARS', 20000, 1000, 200000),
     readMaxChars: integer('READ_MAX_CHARS', 20000, 1000, 200000),
+    snapshotMaxOutputTokens: integer('SNAPSHOT_MAX_OUTPUT_TOKENS', 2000, 256, 16000),
   };
 }

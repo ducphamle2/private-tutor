@@ -31,13 +31,21 @@ export function record(value: unknown): Record<string, unknown> {
 export function event(type: string, fields: Record<string, unknown> = {}): WireEvent {
   return { type, event_id: `event_${randomUUID()}`, ...fields };
 }
-export function sessionConfiguration(persona: Persona, topicFile: string, topicText: string) {
+export function sessionConfiguration(
+  persona: Persona,
+  topicFile: string,
+  topicText: string,
+  snapshotText: string,
+) {
   const topic = topicText
     ? `\n\nThe user chose this study topic. Teach and quiz from it.\n--- ${topicFile} ---\n${topicText}\n--- end ---`
     : '\n\nNo topic file was chosen. Ask the user what they want to study.';
+  const history = snapshotText
+    ? `\n\nThis continues an earlier conversation. Snapshot of previous sessions (use it to pick up where you left off, revisit mistakes and open questions):\n${snapshotText}`
+    : '';
   return {
     model: MODEL,
-    instructions: `${LIVE_BASE_INSTRUCTIONS}\n\n${persona.liveInstructions}${topic}`,
+    instructions: `${LIVE_BASE_INSTRUCTIONS}\n\n${persona.liveInstructions}${topic}${history}`,
     audio: { output: { voice: 'marin' } },
     delegation: { type: 'client' },
     client: {

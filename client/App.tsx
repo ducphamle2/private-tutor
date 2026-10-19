@@ -1,5 +1,11 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
-import type { ConsoleConfig, ConsoleEvent, Phase } from '../shared/types.ts';
+import type {
+  ConsoleConfig,
+  ConsoleEvent,
+  ConversationRecord,
+  ConversationSummary,
+  Phase,
+} from '../shared/types.ts';
 import { BrowserSession } from './session.ts';
 import { emptyState, reduceEvent } from './state.ts';
 import type { ViewState } from './state.ts';
@@ -22,12 +28,20 @@ function limitLabel(seconds: number) {
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 type Notice = { message: string; action?: string; code?: string };
+const REPLAYED_EVENT_TYPES = ['transcript', 'delegation', 'tool', 'backend_text'];
+const getJson = async <T,>(path: string): Promise<T> => {
+  const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store' });
+  if (!response.ok) throw new Error(`Could not load ${path}.`);
+  return (await response.json()) as T;
+};
 
 export function App() {
   const [config, setConfig] = useState<ConsoleConfig>();
   const [phase, setPhase] = useState<Phase>('idle');
   const [persona, setPersona] = useState('');
   const [topicFile, setTopicFile] = useState('');
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [conversationId, setConversationId] = useState('');
   const [view, dispatch] = useReducer(
     (state: ViewState, action: ConsoleEvent | { type: 'reset' }) =>
       action.type === 'reset' ? emptyState() : reduceEvent(state, action),
@@ -84,6 +98,7 @@ export function App() {
         if (!response.ok) throw new Error('Could not read the server configuration.');
         const value = (await response.json()) as ConsoleConfig;
         if (current) setConfig(value);
+        if (current) loadConversations();
       })
       .catch((e) => {
         if (current)
@@ -105,6 +120,7 @@ export function App() {
       error: (message, action, code) => setError({ message, action, code }),
       level: setLevel,
       playbackBlocked: setBlocked,
+      conversation: setConversationId,
     });
     session.current = controller;
     return () => {
@@ -130,17 +146,39 @@ export function App() {
   useEffect(() => {
     if (audio.current) audio.current.volume = volume / 100;
   }, [volume]);
+  const loadConversations = () =>
+    void getJson<ConversationSummary[]>('/api/conversations')
+      .then(setConversations)
+      .catch(() => undefined);
+  useEffect(() => {
+    if (['closed', 'incomplete'].includes(phase)) loadConversations();
+  }, [phase]);
+  const selectConversation = async (id: string) => {
+    setConversationId(id);
+    dispatch({ type: 'reset' });
+    if (!id) return;
+    const summary = conversations.find((c) => c.id === id);
+    setPersona(summary?.persona || '');
+    setTopicFile(summary?.topicFile || '');
+    try {
+      const records = await getJson<ConversationRecord[]>(`/api/conversations/${id}`);
+      for (const { event } of records)
+        if (REPLAYED_EVENT_TYPES.includes(event.type)) dispatch(event as ConsoleEvent);
+    } catch (e) {
+      setError({ message: e instanceof Error ? e.message : 'Could not load the conversation.' });
+    }
+  };
   const start = () => {
     if (!config || !session.current) return;
     setError(undefined);
-    dispatch({ type: 'reset' });
+    if (!conversationId) dispatch({ type: 'reset' });
     setMuted(false);
     setStartedAt(undefined);
     setNewText(false);
     following.current = true;
     void session.current.start(
       config,
-      { persona: persona || config.personas[0].id, topicFile },
+      { persona: persona || config.personas[0].id, topicFile, conversationId },
       inputDevice,
       outputDevice,
     );
@@ -158,7 +196,7 @@ export function App() {
   };
   const startButton = (
     <button className="primary-button" disabled={!config?.configured} onClick={start}>
-      {hasTranscript ? 'Start new conversation' : 'Start conversation'}
+      {conversationId ? 'Continue conversation' : 'Start new conversation'}
     </button>
   );
   const disclosure = (
@@ -184,8 +222,30 @@ export function App() {
       </header>
       <div className="toolbar">
         <div className="delegation-control">
+          <label htmlFor="conversation">Conversation</label>
+          <select
+            id="conversation"
+            value={conversationId}
+            disabled={active}
+            onFocus={loadConversations}
+            onChange={(e) => void selectConversation(e.target.value)}
+          >
+            <option value="">New conversation</option>
+            {conversations.map((c) => (
+              <option key={c.id} value={c.id}>
+                {`${c.title} · ${new Date(c.updatedAt).toLocaleString()} · ${c.persona}`}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="delegation-control">
           <label htmlFor="persona">Persona</label>
-          <select id="persona" value={persona} disabled={active} onChange={(e) => setPersona(e.target.value)}>
+          <select
+            id="persona"
+            value={persona}
+            disabled={active || Boolean(conversationId)}
+            onChange={(e) => setPersona(e.target.value)}
+          >
             {config?.personas.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.label}
@@ -198,7 +258,7 @@ export function App() {
           <select
             id="topic-file"
             value={topicFile}
-            disabled={active}
+            disabled={active || Boolean(conversationId)}
             onChange={(e) => setTopicFile(e.target.value)}
           >
             <option value="">No topic file</option>

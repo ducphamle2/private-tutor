@@ -80,3 +80,92 @@ Kept as-is: `server/openai.ts` (WebRTC create, sideband attach, hangup), `server
 7. "Add a note that I keep confusing X and Y." Check that the file was updated and a `.bak` exists.
 8. "Read ../../.ssh/id_rsa." It should be rejected and nothing read.
 9. End the session and confirm the UI shows a finalized close with usage.
+
+---
+
+# Conversation history: plan
+
+## Context
+
+Today every voice session is thrown away when it ends. You want both sides of each study conversation saved locally: the voice transcript and the backend agent's work (handoffs, tool calls with full results, answers). From the UI you should be able to pick a past conversation by ID, see its transcript, and continue it.
+
+GPT-Live can't reopen a finished session. So **"continue" means starting a new Live session primed with a structured JSON snapshot** of the conversation, which the backend agent writes when a session ends.
+
+Your choices: save everything in full; store in `private-tutor/conversations/`, gitignored; keep the original persona and topic when resuming and show the old transcript.
+
+## Storage layout (one folder per conversation)
+
+```
+private-tutor/conversations/        # gitignored
+  <conversationId>/                 # UUID
+    log.jsonl                       # append-only, one JSON record per line, survives crashes
+    snapshot.json                   # structured summary, rewritten at the end of each session
+```
+
+**`log.jsonl` records** are `{ at: ISO, sessionId, event }`, where `event` is either:
+
+- **every `ConsoleEvent` the session already emits**: `transcript` (both roles), `delegation`, `tool` (full arguments and full result), `backend_text` (agent answer), `closed`. `usage` is skipped as noise. Or
+- **`{ type: 'session_start', persona, topicFile, studyDir, resumed }`**, written once at the start of each session.
+
+**Why this is low-code:** `LiveSession.emit()` (`server/session.ts`) already funnels every event. Adding one append there records everything. The UI reducer `reduceEvent` (`client/state.ts`) already turns these exact events into the transcript and activity panes, so replaying the log in the UI needs no new rendering code.
+
+**`snapshot.json`** has two kinds of fields.
+
+Facts filled from the log, not by the model:
+`id`, `createdAt`, `updatedAt`, `sessionCount`, `studyDir`, `persona`, `topicFile`, `filesRead[]`, `filesWritten[]`, `webSearches[]`.
+
+Fields the model writes, through Responses structured output (`text.format: json_schema`, strict) on `OPENAI_BACKEND_MODEL`:
+`title`, `summary`, `topicsDiscussed[]`, `keyPoints[]`, `userStrengths[]`, `mistakesAndMisconceptions[]`, `openQuestions[]`, `quizResults` (`{ asked, correct, notes }`), `nextSteps[]`.
+
+## Flow
+
+**New conversation**
+
+1. Start a session with no `conversationId`. The server generates one, creates the folder, and writes `session_start`.
+2. Every event is appended to `log.jsonl` as it happens.
+3. When the session ends, whatever the reason (End button, time limit, disconnect), the server builds the snapshot in the background (`session.done.then` in `http.ts`).
+   - Input to the model: the previous snapshot, if any, plus this session's log.
+   - The previous snapshot plus the new log is merged into a new `snapshot.json`.
+   - If the snapshot fails, the log is still complete.
+
+**Continue**
+
+1. In the UI you pick a conversation. It calls `GET /api/conversations/<id>`, replays the log into the reducer, and locks persona and topic to the original.
+2. Clicking Continue sends `POST /api/sessions` with `conversationId`. The server ignores the persona and topic in the request and uses the stored ones.
+3. The snapshot is injected into Live's instructions in `sessionConfiguration`: "Previous sessions of this conversation: <snapshot JSON>".
+   - It's also prepended to the agent's context in `runBackend`, so the agent knows what was covered.
+4. If `snapshot.json` is missing or older than the log (for example, the server was killed mid-session), it is built synchronously before resuming.
+5. New events append to the same `log.jsonl` under the new `sessionId`. The snapshot is updated again at the end.
+
+## Files
+
+| File                                     | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`server/conversations.ts`** (new)      | `createConversation(meta)`, `appendConversationEvent(id, sessionId, event)` (`fs.appendFile`), `readConversationLog(id)`, `listConversations()` (id, title, persona, topic, updatedAt; sorted newest first), `readSnapshot(id)`, `buildSnapshot(settings, client, id)` (structured-output call plus merge with the log-derived fields), `ensureFreshSnapshot(...)`. Conversation IDs are validated as UUIDs, so they can't be used for path traversal. |
+| `server/config.ts`                       | Add `CONVERSATIONS_DIR` (default `<repo>/conversations`, created at startup) and `SNAPSHOT_MAX_OUTPUT_TOKENS` (default 2000).                                                                                                                                                                                                                                                                                                                          |
+| `server/session.ts`                      | The constructor takes `conversationId` and `snapshotText`. `emit()` also calls `appendConversationEvent` (fire-and-forget with an error log; skips `usage`). It writes `session_start` in `start()`. `runBackend` prepends `snapshotText` to the agent input.                                                                                                                                                                                          |
+| `server/protocol.ts`                     | `sessionConfiguration(persona, topicFile, topicText, snapshotText)` appends a "Previous sessions" block when `snapshotText` is non-empty.                                                                                                                                                                                                                                                                                                              |
+| `server/http.ts`                         | Add `GET /api/conversations` (list) and `GET /api/conversations/<uuid>` (log events for replay). Both need the owner cookie and go through the existing Host/Origin `guard`. `POST /api/sessions` accepts an optional `conversationId`. When present, it loads persona and topic from the log and calls `ensureFreshSnapshot`. Return `conversationId` in the 201 response. In `session.done.then`, call `void buildSnapshot(...)`.                    |
+| `shared/types.ts`                        | `StartOptions.conversationId?`. Add `ConversationSummary { id, title, persona, topicFile, updatedAt }`.                                                                                                                                                                                                                                                                                                                                                |
+| `client/session.ts`                      | Send `conversationId` in the start body. Expose the returned ID.                                                                                                                                                                                                                                                                                                                                                                                       |
+| `client/App.tsx`                         | A **Conversation** `<select>`: "New conversation" plus past ones labelled with title, date and persona. Picking one fetches and replays its events (`dispatch` each), sets and locks persona and topic, and changes the button to "Continue conversation". `start()` doesn't reset the view when continuing. Refresh the list after a session closes.                                                                                                  |
+| `.gitignore`                             | Add `conversations/`.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `CLAUDE.md`, `README.md`, `.env.example` | Document the feature, the new env vars, the `conversations/` layout and the snapshot schema.                                                                                                                                                                                                                                                                                                                                                           |
+
+## Notes and limits
+
+- **Replay display:** the transcript pane still caps at about 100 turns / 20k characters (`reduceEvent`), so very long histories show their tail. The full log stays on disk.
+- **Continue context:** only the snapshot primes the new session. The raw old transcript is not re-sent to Live, which keeps instructions small and avoids the undocumented size limit.
+- **Snapshot cost:** each one is a single backend-model call at session end.
+- **Study folder:** `studyDir` is recorded in the snapshot. If `STUDY_DIR` has changed since, resuming still works and the tutor is told the original folder.
+
+## Verification
+
+1. `npm run typecheck` and `npm run check`.
+2. Start a new conversation, say a few things, trigger one file read and one web search, then End.
+   - `conversations/<id>/log.jsonl` has a `session_start`, transcript lines for both roles, delegation, tool (full result) and backend_text records.
+   - `snapshot.json` appears within a few seconds with all fields filled.
+3. Reload the page and pick the conversation. The old transcript and activity show, and persona and topic are locked.
+4. Continue, then ask "what did we cover last time?". The tutor answers from the snapshot. After ending, the log has a second `sessionId`, and the snapshot shows `sessionCount: 2` and merged content.
+5. Kill the server mid-session, restart, and continue. A snapshot is built before the session starts.
+6. Request `GET /api/conversations/../../etc`, a non-UUID ID. It is rejected.

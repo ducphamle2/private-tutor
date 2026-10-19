@@ -8,6 +8,15 @@ import { SampleError, publicError } from './errors.ts';
 import { LiveSession } from './session.ts';
 import { findPersona, personas } from './personas.ts';
 import { listStudyFiles, readStudyFile } from './study-tools.ts';
+import {
+  buildSnapshot,
+  conversationExists,
+  createConversation,
+  ensureFreshSnapshot,
+  firstSessionStart,
+  listConversations,
+  readConversationLog,
+} from './conversations.ts';
 
 interface Owner {
   csrf: string;
@@ -164,6 +173,18 @@ export function createHttpApp(
         });
         return;
       }
+      if (req.method === 'GET' && url.pathname.startsWith('/api/conversations')) {
+        ownerFor(req);
+        if (url.pathname === '/api/conversations') {
+          json(res, 200, await listConversations(settings));
+          return;
+        }
+        const conversationId = url.pathname.slice('/api/conversations/'.length);
+        if (!conversationExists(settings, conversationId))
+          throw new SampleError(404, 'conversation_not_found', 'Conversation not found.');
+        json(res, 200, await readConversationLog(settings, conversationId));
+        return;
+      }
       if (req.method !== 'POST') throw new SampleError(405, 'method_not_allowed', 'Method not allowed.');
       guard(req, true);
       const { id, owner } = ownerFor(req);
@@ -201,9 +222,10 @@ export function createHttpApp(
       }
       if (url.pathname !== '/api/sessions') throw new SampleError(404, 'not_found', 'Endpoint not found.');
       if (
-        Object.keys(payload).sort().join(',') !== 'operationId,persona,sdp,topicFile' ||
+        Object.keys(payload).sort().join(',') !== 'conversationId,operationId,persona,sdp,topicFile' ||
         !findPersona(String(payload.persona)) ||
         typeof payload.topicFile !== 'string' ||
+        typeof payload.conversationId !== 'string' ||
         typeof payload.sdp !== 'string' ||
         !payload.sdp.startsWith('v=0') ||
         payload.sdp.length < 32 ||
@@ -213,11 +235,20 @@ export function createHttpApp(
         throw new SampleError(
           400,
           'invalid_session_request',
-          'Expected a persona, topicFile, operationId, and complete SDP offer.',
+          'Expected a persona, topicFile, conversationId, operationId, and complete SDP offer.',
         );
-      const topicFile = payload.topicFile as string;
+      const resumedConversationId = payload.conversationId as string;
+      const resumed = Boolean(resumedConversationId);
+      if (resumed && !conversationExists(settings, resumedConversationId))
+        throw new SampleError(404, 'conversation_not_found', 'Conversation not found.');
+      const originalStart = resumed
+        ? firstSessionStart(await readConversationLog(settings, resumedConversationId))
+        : undefined;
+      const persona = findPersona(originalStart?.persona || (payload.persona as string)) || personas[0];
+      const topicFile = originalStart ? originalStart.topicFile : (payload.topicFile as string);
       const topicText = topicFile
         ? await readStudyFile(settings, topicFile, settings.topicMaxChars).catch((error: Error) => {
+            if (resumed) return '';
             throw new SampleError(400, 'invalid_topic_file', error.message);
           })
         : '';
@@ -248,11 +279,27 @@ export function createHttpApp(
       starts.push(Date.now());
       owner.operations.add(payload.operationId);
       if (owner.operations.size > 32) owner.operations.delete(owner.operations.values().next().value!);
+      const snapshot = resumed
+        ? await ensureFreshSnapshot(settings, gateway.client, resumedConversationId).catch((error: Error) => {
+            throw new SampleError(
+              502,
+              'snapshot_failed',
+              `Could not summarize the previous sessions: ${error.message}`,
+              'Try again. The conversation log is safe on disk.',
+            );
+          })
+        : undefined;
+      const conversationId = resumed ? resumedConversationId : createConversation(settings);
       const session = new LiveSession(
         id,
-        findPersona(payload.persona as string)!,
-        topicFile,
-        topicText,
+        {
+          persona,
+          topicFile,
+          topicText,
+          conversationId,
+          resumed,
+          snapshotText: snapshot ? JSON.stringify(snapshot) : '',
+        },
         settings,
         gateway,
       );
@@ -264,6 +311,9 @@ export function createHttpApp(
         if (!res.writableEnded) session.cancelStart();
       });
       void session.done.then(() => {
+        void buildSnapshot(settings, gateway.client, conversationId).catch((error: Error) =>
+          console.warn(`Snapshot for conversation ${conversationId} failed: ${error.message}`),
+        );
         if (active === session) active = undefined;
         // Retain the terminal receipt briefly for a concurrent stop request.
         const timer = setTimeout(() => {
@@ -273,7 +323,7 @@ export function createHttpApp(
         timer.unref();
       });
       const sdp = await session.start(payload.sdp);
-      if (!res.destroyed) json(res, 201, { id: session.id, sdp });
+      if (!res.destroyed) json(res, 201, { id: session.id, sdp, conversationId });
     } catch (error) {
       if (!res.destroyed && !res.headersSent) {
         const status = error instanceof SampleError ? error.status : 502;

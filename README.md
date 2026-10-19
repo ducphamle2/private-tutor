@@ -15,6 +15,7 @@ Built on [openai-live-console](https://github.com/openai/openai-live-console) (M
   The agent's answer is streamed back to the tutor and stays in its context for the rest of the session.
 
 - **Personas:** Socratic coach, strict examiner, mock interviewer (`server/personas.ts`).
+- **Conversation history:** every session is logged to `conversations/<id>/log.jsonl` (voice transcript plus everything the agent did). When a session ends, a `snapshot.json` summary is written (topics, key points, mistakes, quiz results, next steps). Pick a past conversation in the UI to see it and click **Continue conversation**; the tutor is primed with the snapshot. `conversations/` is gitignored.
 
 ## Run
 
@@ -39,7 +40,7 @@ Try:
 
 ## Costs
 
-Live audio minutes and agent tokens (plus web searches) are billed separately. Sessions auto-end after `MAX_SESSION_SECONDS` (default 30 min). Click **End conversation** when you're done; muting does not stop billing.
+Live audio minutes and agent tokens (plus web searches and one snapshot call per session) are billed separately. Sessions auto-end after `MAX_SESSION_SECONDS` (default 30 min). Click **End conversation** when you're done; muting does not stop billing.
 
 ## Safety
 
