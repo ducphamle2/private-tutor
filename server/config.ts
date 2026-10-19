@@ -1,6 +1,9 @@
 import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 export interface Settings {
   apiKey: string;
@@ -19,6 +22,8 @@ export interface Settings {
   topicMaxChars: number;
   readMaxChars: number;
   snapshotMaxOutputTokens: number;
+  logThrottleMs: number;
+  snapshotThrottleMs: number;
 }
 
 const DEFAULT_CONVERSATIONS_DIR = fileURLToPath(new URL('../conversations', import.meta.url));
@@ -40,7 +45,7 @@ export function settingsFromEnv(env: NodeJS.ProcessEnv = process.env): Settings 
   if (env.HOST && env.HOST !== '127.0.0.1') throw new Error('This app only supports HOST=127.0.0.1.');
   const studyDirRaw = env.STUDY_DIR?.trim() || '';
   if (!studyDirRaw || !existsSync(studyDirRaw) || !statSync(studyDirRaw).isDirectory())
-    throw new Error('STUDY_DIR must be set to an existing folder in .env.');
+    throw new Error(`STUDY_DIR ${studyDirRaw} must be set to an existing folder in .env.`);
   const conversationsDir = resolve(env.CONVERSATIONS_DIR?.trim() || DEFAULT_CONVERSATIONS_DIR);
   mkdirSync(conversationsDir, { recursive: true });
   return {
@@ -60,5 +65,7 @@ export function settingsFromEnv(env: NodeJS.ProcessEnv = process.env): Settings 
     topicMaxChars: integer('TOPIC_MAX_CHARS', 20000, 1000, 200000),
     readMaxChars: integer('READ_MAX_CHARS', 20000, 1000, 200000),
     snapshotMaxOutputTokens: integer('SNAPSHOT_MAX_OUTPUT_TOKENS', 2000, 256, 16000),
+    logThrottleMs: integer('LOG_THROTTLE_MS', 2000, 2000, 60000),
+    snapshotThrottleMs: integer('SNAPSHOT_THROTTLE_MS', 5000, 1000, 600000),
   };
 }

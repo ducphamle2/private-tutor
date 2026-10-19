@@ -58,6 +58,8 @@ Voice-first private tutor. The user studies and practices out loud with GPT-Live
 | `TOPIC_MAX_CHARS`            | no               | `20000`                | 1000–200000      | Cap on topic-file text injected into Live instructions. Lower it if session start fails (Live instruction limit is undocumented).   |
 | `CONVERSATIONS_DIR`          | no               | `<repo>/conversations` | path             | Where conversation folders are stored; created at startup.                                                                          |
 | `SNAPSHOT_MAX_OUTPUT_TOKENS` | no               | `2000`                 | 256–16000        | `max_output_tokens` for the end-of-session snapshot call.                                                                           |
+| `LOG_THROTTLE_MS`            | no               | `2000`                 | 2000–60000       | Min gap between `log.jsonl` writes; events in between are batched (flushed on read).                                                |
+| `SNAPSHOT_THROTTLE_MS`       | no               | `5000`                 | 1000–600000      | Min gap between `snapshot.json` writes per conversation; later builds wait.                                                         |
 | `READ_MAX_CHARS`             | no               | `20000`                | 1000–200000      | Cap on text returned by `read_study_file`.                                                                                          |
 
 Hardcoded (not env): snapshot tool-result excerpt 2000 chars (`conversations.ts`), `closeTimeoutMs` 20 s, tool-output batch 30 KiB (`protocol.ts`), commentary append 400 bytes, request body 128 KiB, listed files 500.

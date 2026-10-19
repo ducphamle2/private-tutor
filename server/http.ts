@@ -180,7 +180,7 @@ export function createHttpApp(
           return;
         }
         const conversationId = url.pathname.slice('/api/conversations/'.length);
-        if (!conversationExists(settings, conversationId))
+        if (!(await conversationExists(settings, conversationId)))
           throw new SampleError(404, 'conversation_not_found', 'Conversation not found.');
         json(res, 200, await readConversationLog(settings, conversationId));
         return;
@@ -239,7 +239,7 @@ export function createHttpApp(
         );
       const resumedConversationId = payload.conversationId as string;
       const resumed = Boolean(resumedConversationId);
-      if (resumed && !conversationExists(settings, resumedConversationId))
+      if (resumed && !(await conversationExists(settings, resumedConversationId)))
         throw new SampleError(404, 'conversation_not_found', 'Conversation not found.');
       const originalStart = resumed
         ? firstSessionStart(await readConversationLog(settings, resumedConversationId))
@@ -289,7 +289,7 @@ export function createHttpApp(
             );
           })
         : undefined;
-      const conversationId = resumed ? resumedConversationId : createConversation(settings);
+      const conversationId = resumed ? resumedConversationId : await createConversation(settings);
       const session = new LiveSession(
         id,
         {

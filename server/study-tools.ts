@@ -1,5 +1,4 @@
-import { copyFile, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { access, copyFile, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { dirname, extname, relative, resolve, sep } from 'node:path';
 import type { Tool } from 'openai/resources/responses/responses';
 import { STUDY_FILE_EXTENSIONS } from './config.ts';
@@ -59,11 +58,17 @@ export const studyToolDefinitions: Tool[] = [
   { type: 'web_search' },
 ];
 
+const exists = (path: string) =>
+  access(path).then(
+    () => true,
+    () => false,
+  );
+
 const isInside = (root: string, target: string) => target === root || target.startsWith(root + sep);
 
 async function nearestExistingRealPath(path: string): Promise<string> {
   let current = path;
-  while (!existsSync(current)) current = dirname(current);
+  while (!(await exists(current))) current = dirname(current);
   return resolve(await realpath(current), relative(current, path));
 }
 
@@ -91,7 +96,7 @@ export async function readStudyFile(settings: Settings, path: string, maxChars: 
 }
 
 async function writeWithBackup(target: string, content: string) {
-  if (existsSync(target)) await copyFile(target, `${target}.bak`);
+  if (await exists(target)) await copyFile(target, `${target}.bak`);
   else await mkdir(dirname(target), { recursive: true });
   await writeFile(target, content, 'utf8');
 }

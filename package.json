@@ -8,16 +8,17 @@
     "node": ">=24.15.0 <25"
   },
   "scripts": {
-    "dev": "node --use-env-proxy --env-file-if-exists=.env server/index.ts",
+    "dev": "tsx server/index.ts",
     "build": "vite build",
-    "start": "node --use-env-proxy --env-file-if-exists=.env server/index.ts --production",
+    "start": "tsx server/index.ts --production",
     "typecheck": "tsc --noEmit",
     "check": "npm run format:check && npm run typecheck && npm run build",
-    "doctor": "node --use-env-proxy --env-file-if-exists=.env scripts/doctor.ts",
+    "doctor": "tsx scripts/doctor.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
   "dependencies": {
+    "dotenv": "16.4.7",
     "https-proxy-agent": "7.0.6",
     "openai": "7.9.0",
     "proxy-from-env": "1.1.0",

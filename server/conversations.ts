@@ -1,5 +1,5 @@
-import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
-import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { access, appendFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type OpenAI from 'openai';
@@ -78,20 +78,46 @@ export interface ConversationSnapshot {
 }
 
 const snapshotBuilds = new Map<string, Promise<ConversationSnapshot | undefined>>();
+const lastSnapshotAt = new Map<string, number>();
+const logBuffers = new Map<
+  string,
+  { lines: string[]; timer?: NodeJS.Timeout; lastWrite: number; chain: Promise<void> }
+>();
 
 function conversationFile(settings: Settings, id: string, file: string) {
   if (!uuid.test(id)) throw new Error('Invalid conversation ID.');
   return join(settings.conversationsDir, id, file);
 }
 
-export function conversationExists(settings: Settings, id: string) {
-  return uuid.test(id) && existsSync(conversationFile(settings, id, LOG_FILE));
+export async function conversationExists(settings: Settings, id: string) {
+  return (
+    uuid.test(id) &&
+    (await access(conversationFile(settings, id, LOG_FILE)).then(
+      () => true,
+      () => false,
+    ))
+  );
 }
 
-export function createConversation(settings: Settings) {
+export async function createConversation(settings: Settings) {
   const id = randomUUID();
-  mkdirSync(join(settings.conversationsDir, id), { recursive: true });
+  await mkdir(join(settings.conversationsDir, id), { recursive: true });
   return id;
+}
+
+function flushLog(settings: Settings, id: string) {
+  const buffer = logBuffers.get(id);
+  if (!buffer) return Promise.resolve();
+  clearTimeout(buffer.timer);
+  buffer.timer = undefined;
+  if (!buffer.lines.length) return buffer.chain;
+  const data = buffer.lines.join('');
+  buffer.lines = [];
+  buffer.lastWrite = Date.now();
+  buffer.chain = buffer.chain
+    .then(() => appendFile(conversationFile(settings, id, LOG_FILE), data))
+    .catch((error: Error) => console.warn(`Conversation log write failed: ${error.message}`));
+  return buffer.chain;
 }
 
 export function appendConversationEvent(
@@ -101,10 +127,17 @@ export function appendConversationEvent(
   event: ConsoleEvent | SessionStartEvent,
 ) {
   const record: ConversationRecord = { at: new Date().toISOString(), sessionId, event };
-  appendFileSync(conversationFile(settings, id, LOG_FILE), `${JSON.stringify(record)}\n`);
+  const buffer = logBuffers.get(id) ?? { lines: [], lastWrite: 0, chain: Promise.resolve() };
+  logBuffers.set(id, buffer);
+  buffer.lines.push(`${JSON.stringify(record)}\n`);
+  buffer.timer ??= setTimeout(
+    () => void flushLog(settings, id),
+    Math.max(0, buffer.lastWrite + settings.logThrottleMs - Date.now()),
+  );
 }
 
 export async function readConversationLog(settings: Settings, id: string): Promise<ConversationRecord[]> {
+  await flushLog(settings, id);
   const text = await readFile(conversationFile(settings, id, LOG_FILE), 'utf8').catch(() => '');
   return text
     .split('\n')
@@ -130,29 +163,32 @@ export const firstSessionStart = (log: ConversationRecord[]) =>
   log.find((record) => record.event.type === 'session_start')?.event as SessionStartEvent | undefined;
 
 export async function listConversations(settings: Settings): Promise<ConversationSummary[]> {
-  const ids = (await readdir(settings.conversationsDir)).filter((id) => conversationExists(settings, id));
+  const ids = await readdir(settings.conversationsDir);
   const summaries = await Promise.all(
     ids.map(async (id) => {
-      const [log, snapshot, info] = await Promise.all([
+      if (!(await conversationExists(settings, id))) return [];
+      const [log, snapshot] = await Promise.all([
         readConversationLog(settings, id),
         readSnapshot(settings, id),
-        stat(conversationFile(settings, id, LOG_FILE)),
       ]);
+      const info = await stat(conversationFile(settings, id, LOG_FILE));
       const start = firstSessionStart(log);
       const firstUserText = log.find((r) => r.event.type === 'transcript' && r.event.role === 'user')?.event;
-      return {
-        id,
-        title:
-          snapshot?.title ||
-          (firstUserText?.type === 'transcript' ? firstUserText.text.slice(0, 60) : '') ||
-          'Untitled conversation',
-        persona: start?.persona || '',
-        topicFile: start?.topicFile || '',
-        updatedAt: info.mtime.toISOString(),
-      };
+      return [
+        {
+          id,
+          title:
+            snapshot?.title ||
+            (firstUserText?.type === 'transcript' ? firstUserText.text.slice(0, 60) : '') ||
+            'Untitled conversation',
+          persona: start?.persona || '',
+          topicFile: start?.topicFile || '',
+          updatedAt: info.mtime.toISOString(),
+        },
+      ];
     }),
   );
-  return summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return summaries.flat().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 function renderLogForModel(records: ConversationRecord[]) {
@@ -229,13 +265,17 @@ async function createSnapshot(settings: Settings, client: OpenAI, id: string) {
     ...JSON.parse(response.output_text),
   };
   await writeFile(conversationFile(settings, id, SNAPSHOT_FILE), JSON.stringify(snapshot, null, 2));
+  lastSnapshotAt.set(id, Date.now());
   return snapshot;
 }
 
 export function buildSnapshot(settings: Settings, client: OpenAI, id: string) {
   const pending = snapshotBuilds.get(id);
   if (pending) return pending;
-  const build = createSnapshot(settings, client, id).finally(() => snapshotBuilds.delete(id));
+  const wait = Math.max(0, (lastSnapshotAt.get(id) ?? 0) + settings.snapshotThrottleMs - Date.now());
+  const build = sleep(wait)
+    .then(() => createSnapshot(settings, client, id))
+    .finally(() => snapshotBuilds.delete(id));
   snapshotBuilds.set(id, build);
   return build;
 }
