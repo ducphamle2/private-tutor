@@ -183,6 +183,8 @@ export async function listConversations(settings: Settings): Promise<Conversatio
             'Untitled conversation',
           persona: start?.persona || '',
           topicFile: start?.topicFile || '',
+          userPrompt: start?.userPrompt || '',
+          studyDir: start?.studyDir || '',
           updatedAt: info.mtime.toISOString(),
         },
       ];

@@ -40,6 +40,9 @@ export function App() {
   const [phase, setPhase] = useState<Phase>('idle');
   const [persona, setPersona] = useState('');
   const [topicFile, setTopicFile] = useState('');
+  const [userPrompt, setUserPrompt] = useState('');
+  const [studyDir, setStudyDir] = useState('');
+  const [studyFiles, setStudyFiles] = useState<string[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [conversationId, setConversationId] = useState('');
   const [view, dispatch] = useReducer(
@@ -97,7 +100,10 @@ export function App() {
       .then(async (response) => {
         if (!response.ok) throw new Error('Could not read the server configuration.');
         const value = (await response.json()) as ConsoleConfig;
-        if (current) setConfig(value);
+        if (current) {
+          setConfig(value);
+          setStudyFiles(value.studyFiles);
+        }
         if (current) loadConversations();
       })
       .catch((e) => {
@@ -153,6 +159,31 @@ export function App() {
   useEffect(() => {
     if (['closed', 'incomplete'].includes(phase)) loadConversations();
   }, [phase]);
+  const loadStudyFiles = (dir: string) =>
+    getJson<string[]>(`/api/study-files?dir=${encodeURIComponent(dir)}`)
+      .then(setStudyFiles)
+      .catch((e: Error) => {
+        setStudyFiles([]);
+        setError({ message: e.message });
+      });
+  const pickFolder = async () => {
+    try {
+      const response = await fetch('/api/pick-folder', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-Console-Csrf': config?.csrf || '' },
+        body: '{}',
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || 'Could not pick the folder.');
+      if (!result.path) return;
+      setStudyDir(result.path);
+      setTopicFile('');
+      void loadStudyFiles(result.path);
+    } catch (e) {
+      setError({ message: e instanceof Error ? e.message : 'Could not pick the folder.' });
+    }
+  };
   const selectConversation = async (id: string) => {
     setConversationId(id);
     dispatch({ type: 'reset' });
@@ -160,6 +191,9 @@ export function App() {
     const summary = conversations.find((c) => c.id === id);
     setPersona(summary?.persona || '');
     setTopicFile(summary?.topicFile || '');
+    setUserPrompt(summary?.userPrompt || '');
+    setStudyDir(summary?.studyDir || '');
+    void loadStudyFiles(summary?.studyDir || '');
     try {
       const records = await getJson<ConversationRecord[]>(`/api/conversations/${id}`);
       for (const { event } of records)
@@ -178,7 +212,7 @@ export function App() {
     following.current = true;
     void session.current.start(
       config,
-      { persona: persona || config.personas[0].id, topicFile, conversationId },
+      { persona: persona || config.personas[0].id, topicFile, userPrompt, studyDir, conversationId },
       inputDevice,
       outputDevice,
     );
@@ -262,12 +296,37 @@ export function App() {
             onChange={(e) => setTopicFile(e.target.value)}
           >
             <option value="">No topic file</option>
-            {config?.studyFiles.map((file) => (
+            {studyFiles.map((file) => (
               <option key={file} value={file}>
                 {file}
               </option>
             ))}
           </select>
+        </div>
+        <div className="delegation-control">
+          <label>Study folder</label>
+          <code title={studyDir || config?.studyDir}>
+            {(studyDir || config?.studyDir || '').split('/').pop()}
+          </code>
+          <button
+            className="secondary-button"
+            disabled={active || Boolean(conversationId)}
+            onClick={() => void pickFolder()}
+          >
+            Change…
+          </button>
+        </div>
+        <div className="delegation-control">
+          <label htmlFor="user-prompt">Guidance</label>
+          <textarea
+            id="user-prompt"
+            rows={2}
+            maxLength={config?.userPromptMaxChars}
+            placeholder="What you're studying and how the tutor should teach and quiz you"
+            value={userPrompt}
+            disabled={active || Boolean(conversationId)}
+            onChange={(e) => setUserPrompt(e.target.value)}
+          />
         </div>
         <button
           className="secondary-button audio-settings-button"
@@ -435,7 +494,7 @@ export function App() {
             {running > 0 && <span className="working-count">{running} active</span>}
           </div>
           <div className="activity-scroll">
-            <p className="catalog-scope">Study folder · Web search</p>
+            <p className="catalog-scope">{`${(studyDir || config?.studyDir || 'Study folder').split('/').pop()} · Web search`}</p>
             {!view.activities.length ? (
               <p className="activity-empty">Tool calls will appear here.</p>
             ) : (

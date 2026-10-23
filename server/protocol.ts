@@ -15,7 +15,7 @@ Keep spoken turns short and conversational, like a real human tutor. Speak in th
 Delegate to the backend whenever you need: the content of a study file other than the topic below,
 a list of the user's study files, saving or editing notes, or facts you are not sure about (web search).
 When backend results arrive, keep them in mind as study context for the rest of the session and use them in your teaching.
-Never invent what a file says. Never claim a file was saved unless the backend confirmed it.`;
+Never repeat the user guidance in requests to the backend. Never invent what a file says. Never claim a file was saved unless the backend confirmed it.`;
 export const BACKEND_INSTRUCTIONS = `You are the backend agent for a voice tutor. You can list, read, write, and edit
 the user's study files, and search the web. Address the user's latest unresolved request in the transcript.
 Read before you edit. Prefer edit_study_file for small changes and write_study_file for new files.
@@ -35,17 +35,21 @@ export function sessionConfiguration(
   persona: Persona,
   topicFile: string,
   topicText: string,
+  userPrompt: string,
   snapshotText: string,
 ) {
   const topic = topicText
     ? `\n\nThe user chose this study topic. Teach and quiz from it.\n--- ${topicFile} ---\n${topicText}\n--- end ---`
     : '\n\nNo topic file was chosen. Ask the user what they want to study.';
+  const guidance = userPrompt
+    ? `\n\nThe user gave this guidance on the subject and how to teach. Follow it unless it conflicts with the rules above.\n--- user guidance ---\n${userPrompt}\n--- end ---`
+    : '';
   const history = snapshotText
     ? `\n\nThis continues an earlier conversation. Snapshot of previous sessions (use it to pick up where you left off, revisit mistakes and open questions):\n${snapshotText}`
     : '';
   return {
     model: MODEL,
-    instructions: `${LIVE_BASE_INSTRUCTIONS}\n\n${persona.liveInstructions}${topic}${history}`,
+    instructions: `${LIVE_BASE_INSTRUCTIONS}\n\n${persona.liveInstructions}${topic}${guidance}${history}`,
     audio: { output: { voice: 'marin' } },
     delegation: { type: 'client' },
     client: {

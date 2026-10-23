@@ -101,7 +101,8 @@ p {
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 20px;
+  flex-wrap: wrap;
+  gap: 12px 20px;
   min-height: 88px;
   padding: 16px 0;
 }
@@ -114,7 +115,8 @@ p {
   font-size: 13px;
   color: var(--muted);
 }
-select {
+select,
+textarea {
   border: 1px solid #d5dace;
   background: #fff;
   border-radius: 7px;

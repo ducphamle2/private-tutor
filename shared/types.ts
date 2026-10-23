@@ -12,13 +12,17 @@ export interface ConsoleConfig {
   model: string;
   backendModel: string;
   maxSessionSeconds: number;
+  userPromptMaxChars: number;
   personas: PersonaOption[];
+  studyDir: string;
   studyFiles: string[];
 }
 
 export interface StartOptions {
   persona: string;
   topicFile: string;
+  userPrompt: string;
+  studyDir: string;
   conversationId: string;
 }
 
@@ -27,6 +31,8 @@ export interface ConversationSummary {
   title: string;
   persona: string;
   topicFile: string;
+  userPrompt: string;
+  studyDir: string;
   updatedAt: string;
 }
 
@@ -34,6 +40,7 @@ export interface SessionStartEvent {
   type: 'session_start';
   persona: string;
   topicFile: string;
+  userPrompt: string;
   studyDir: string;
   resumed: boolean;
 }

@@ -28,6 +28,7 @@ export interface LiveSessionOptions {
   persona: Persona;
   topicFile: string;
   topicText: string;
+  userPrompt: string;
   conversationId: string;
   resumed: boolean;
   snapshotText: string;
@@ -93,6 +94,7 @@ export class LiveSession {
           this.options.persona,
           this.options.topicFile,
           this.options.topicText,
+          this.options.userPrompt,
           this.options.snapshotText,
         ),
         sdp,
@@ -125,6 +127,7 @@ export class LiveSession {
         type: 'session_start',
         persona: this.options.persona.id,
         topicFile: this.options.topicFile,
+        userPrompt: this.options.userPrompt,
         studyDir: this.settings.studyDir,
         resumed: this.options.resumed,
       });

@@ -1,5 +1,5 @@
 import { access, copyFile, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
-import { dirname, extname, relative, resolve, sep } from 'node:path';
+import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import type { Tool } from 'openai/resources/responses/responses';
 import { STUDY_FILE_EXTENSIONS } from './config.ts';
 import type { Settings } from './config.ts';
@@ -82,12 +82,18 @@ export async function resolveStudyPath(studyDir: string, path: string): Promise<
 }
 
 export async function listStudyFiles(studyDir: string): Promise<string[]> {
-  const entries = await readdir(studyDir, { recursive: true });
-  return entries
-    .filter((entry) => STUDY_FILE_EXTENSIONS.includes(extname(entry).toLowerCase()))
-    .filter((entry) => !entry.split(sep).some((part) => SKIPPED_DIRS.includes(part)))
-    .sort()
-    .slice(0, MAX_LISTED_FILES);
+  const files: string[] = [];
+  const walk = async (dir: string) => {
+    for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      if (files.length >= MAX_LISTED_FILES) return;
+      if (entry.isDirectory()) {
+        if (!SKIPPED_DIRS.includes(entry.name)) await walk(join(dir, entry.name));
+      } else if (STUDY_FILE_EXTENSIONS.includes(extname(entry.name).toLowerCase()))
+        files.push(relative(studyDir, join(dir, entry.name)));
+    }
+  };
+  await walk(studyDir);
+  return files.sort();
 }
 
 export async function readStudyFile(settings: Settings, path: string, maxChars: number): Promise<string> {

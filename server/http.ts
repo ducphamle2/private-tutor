@@ -1,4 +1,7 @@
 import http from 'node:http';
+import { execFile } from 'node:child_process';
+import { realpath, stat } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Settings } from './config.ts';
@@ -98,6 +101,12 @@ export function createHttpApp(
   }, 60000);
   gc.unref();
   const expectedHost = new URL(settings.origin).host;
+  const allowedDir = async (dir: string, fallback: string, status = 400) => {
+    const real = await realpath(dir || fallback).catch(() => '');
+    if (!real || !(await stat(real)).isDirectory())
+      throw new SampleError(status, 'invalid_study_dir', 'The study folder must be an existing folder.');
+    return real;
+  };
   const guard = (req: http.IncomingMessage, mutation = false) => {
     if (
       req.headers.host !== expectedHost ||
@@ -142,7 +151,8 @@ export function createHttpApp(
         fallback(req, res);
         return;
       }
-      if (url.search) throw new SampleError(400, 'unexpected_query', 'Unexpected query parameters.');
+      if (url.search && url.pathname !== '/api/study-files')
+        throw new SampleError(400, 'unexpected_query', 'Unexpected query parameters.');
       if (req.method === 'GET' && url.pathname === '/api/config') {
         let id = cookie(req),
           owner = owners.get(id);
@@ -168,9 +178,20 @@ export function createHttpApp(
           model: MODEL,
           backendModel: settings.backendModel,
           maxSessionSeconds: settings.maxSessionSeconds,
+          userPromptMaxChars: settings.userPromptMaxChars,
           personas: personas.map(({ id, label }) => ({ id, label })),
+          studyDir: settings.studyDir,
           studyFiles: await listStudyFiles(settings.studyDir),
         });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/study-files') {
+        ownerFor(req);
+        json(
+          res,
+          200,
+          await listStudyFiles(await allowedDir(url.searchParams.get('dir') || '', settings.studyDir)),
+        );
         return;
       }
       if (req.method === 'GET' && url.pathname.startsWith('/api/conversations')) {
@@ -220,11 +241,34 @@ export function createHttpApp(
         json(res, 200, session.rejectedBeforeCreation ? { type: 'cancelled' } : result);
         return;
       }
+      if (url.pathname === '/api/pick-folder') {
+        if (process.platform !== 'darwin')
+          throw new SampleError(501, 'picker_unsupported', 'The folder dialog only works on macOS.');
+        const { stdout } = await promisify(execFile)(
+          'osascript',
+          [
+            '-e',
+            'on run argv',
+            '-e',
+            'POSIX path of (choose folder with prompt "Select study folder" default location POSIX file (item 1 of argv))',
+            '-e',
+            'end run',
+            settings.studyDir,
+          ],
+          { timeout: settings.pickFolderTimeoutMs },
+        ).catch(() => ({ stdout: '' }));
+        json(res, 200, { path: stdout.trim() ? await allowedDir(stdout.trim(), '') : '' });
+        return;
+      }
       if (url.pathname !== '/api/sessions') throw new SampleError(404, 'not_found', 'Endpoint not found.');
       if (
-        Object.keys(payload).sort().join(',') !== 'conversationId,operationId,persona,sdp,topicFile' ||
+        Object.keys(payload).sort().join(',') !==
+          'conversationId,operationId,persona,sdp,studyDir,topicFile,userPrompt' ||
         !findPersona(String(payload.persona)) ||
         typeof payload.topicFile !== 'string' ||
+        typeof payload.studyDir !== 'string' ||
+        typeof payload.userPrompt !== 'string' ||
+        payload.userPrompt.length > settings.userPromptMaxChars ||
         typeof payload.conversationId !== 'string' ||
         typeof payload.sdp !== 'string' ||
         !payload.sdp.startsWith('v=0') ||
@@ -235,7 +279,7 @@ export function createHttpApp(
         throw new SampleError(
           400,
           'invalid_session_request',
-          'Expected a persona, topicFile, conversationId, operationId, and complete SDP offer.',
+          `Expected a persona, topicFile, studyDir, userPrompt (max ${settings.userPromptMaxChars} chars), conversationId, operationId, and complete SDP offer.`,
         );
       const resumedConversationId = payload.conversationId as string;
       const resumed = Boolean(resumedConversationId);
@@ -246,8 +290,15 @@ export function createHttpApp(
         : undefined;
       const persona = findPersona(originalStart?.persona || (payload.persona as string)) || personas[0];
       const topicFile = originalStart ? originalStart.topicFile : (payload.topicFile as string);
+      const userPrompt = originalStart ? originalStart.userPrompt || '' : (payload.userPrompt as string);
+      const studyDir = await allowedDir(
+        originalStart ? originalStart.studyDir : (payload.studyDir as string),
+        settings.studyDir,
+        resumed ? 409 : 400,
+      );
+      const sessionSettings = { ...settings, studyDir };
       const topicText = topicFile
-        ? await readStudyFile(settings, topicFile, settings.topicMaxChars).catch((error: Error) => {
+        ? await readStudyFile(sessionSettings, topicFile, settings.topicMaxChars).catch((error: Error) => {
             if (resumed) return '';
             throw new SampleError(400, 'invalid_topic_file', error.message);
           })
@@ -296,11 +347,12 @@ export function createHttpApp(
           persona,
           topicFile,
           topicText,
+          userPrompt,
           conversationId,
           resumed,
           snapshotText: snapshot ? JSON.stringify(snapshot) : '',
         },
-        settings,
+        sessionSettings,
         gateway,
       );
       active = session;

@@ -25,7 +25,7 @@ Voice-first private tutor. The user studies and practices out loud with GPT-Live
 - **Security that must not be simplified away:**
   - Server binds `127.0.0.1` only; Host/Origin checks, session cookie, CSRF header (`http.ts`). Never expose via tunnel/reverse proxy.
   - API keys stay server-side (`.env`); never in client code or `VITE_` vars.
-  - File tools are confined to `STUDY_DIR` (realpath check defeats `..` and symlink escapes) and to `.md`/`.txt`.
+  - File tools are confined to the session's study folder (`STUDY_DIR`, or a folder the user picks in the native OS dialog; the check defeats `..` and symlink escapes) and to `.md`/`.txt`. Only the user picks the folder; it is fixed at session start.
   - Every overwrite/edit saves `<file>.bak` first.
   - Agent instructions treat file and web content as data, not instructions.
 - **Cost guards**: session auto-ends after `MAX_SESSION_SECONDS`; caps on delegations, tool calls, tool rounds and output sizes. No automatic reconnects or hidden retries (each would be billed).
@@ -60,6 +60,7 @@ Voice-first private tutor. The user studies and practices out loud with GPT-Live
 | `SNAPSHOT_MAX_OUTPUT_TOKENS` | no               | `2000`                 | 256–16000        | `max_output_tokens` for the end-of-session snapshot call.                                                                           |
 | `LOG_THROTTLE_MS`            | no               | `2000`                 | 2000–60000       | Min gap between `log.jsonl` writes; events in between are batched (flushed on read).                                                |
 | `SNAPSHOT_THROTTLE_MS`       | no               | `5000`                 | 1000–600000      | Min gap between `snapshot.json` writes per conversation; later builds wait.                                                         |
+| `USER_PROMPT_MAX_CHARS`      | no               | `2000`                 | 100–10000        | Cap on the user guidance prompt (Live-only; never sent to the agent). Over-length requests are rejected.                            |
 | `READ_MAX_CHARS`             | no               | `20000`                | 1000–200000      | Cap on text returned by `read_study_file`.                                                                                          |
 
 Hardcoded (not env): snapshot tool-result excerpt 2000 chars (`conversations.ts`), `closeTimeoutMs` 20 s, tool-output batch 30 KiB (`protocol.ts`), commentary append 400 bytes, request body 128 KiB, listed files 500.
